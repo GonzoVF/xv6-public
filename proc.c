@@ -7,6 +7,9 @@
 #include "proc.h"
 #include "spinlock.h"
 
+// Declarations
+int lotto_total(void);
+
 struct {
   struct spinlock lock;
   struct proc proc[NPROC];
@@ -88,6 +91,7 @@ allocproc(void)
 found:
   p->state = EMBRYO;
   p->pid = nextpid++;
+	p->tix = 100;
 
   release(&ptable.lock);
 
@@ -311,6 +315,29 @@ wait(void)
   }
 }
 
+// Random gen
+
+static unsigned long X = 1;
+int rng_rand(unsigned long n){
+	unsigned long a = 1103515245, c = 12345;
+	X = a * X + c;
+	return ((unsigned int)(X / 65536) % 32768) % n + 1;
+}
+
+// lotto_total
+
+int lotto_total(void){
+	struct proc *p;
+	int tot_tix = 0;
+
+	for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+		if(p->state == RUNNABLE){
+			tot_tix = tot_tix + p->tix;
+		}
+	}
+	return tot_tix;
+}
+
 //PAGEBREAK: 42
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
@@ -325,34 +352,50 @@ scheduler(void)
   struct proc *p;
   struct cpu *c = mycpu();
   c->proc = 0;
+	int count = 0;
+	uint win_tix = 0;
+	int total_tix = 0;
   
   for(;;){
+		count++;
     // Enable interrupts on this processor.
     sti();
-
-    // Loop over process table looking for process to run.
     acquire(&ptable.lock);
-    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-      if(p->state != RUNNABLE)
-        continue;
 
-      // Switch to chosen process.  It is the process's job
-      // to release ptable.lock and then reacquire it
-      // before jumping back to us.
-      c->proc = p;
-      switchuvm(p);
-      p->state = RUNNING;
+		//Set ticket number
+		total_tix = lotto_total();
 
-      swtch(&(c->scheduler), p->context);
-      switchkvm();
+		if(total_tix > 0){
+			//Get winner with strange math contraption function
+			win_tix = rng_rand(rng_rand(count * total_tix));
+			if(total_tix < win_tix){
+				win_tix = win_tix % total_tix;
+			}
+	
+			//Loop up to next runnable process
+			for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    	  if(p->state != RUNNABLE)
+    	    win_tix = win_tix - p->tix;
+				if(p->state != RUNNABLE || win_tix >= 0)
+					continue;
 
-      // Process is done running for now.
-      // It should have changed its p->state before coming back.
-      c->proc = 0;
-    }
-    release(&ptable.lock);
+   		  // Switch to chosen process.  It is the process's job
+    	  // to release ptable.lock and then reacquire it
+    	  // before jumping back to us.
+    	  c->proc = p;
+    	  switchuvm(p);
+    	  p->state = RUNNING;
 
-  }
+   		  swtch(&(c->scheduler), p->context);
+    	  switchkvm();
+		
+   		  // Process is done running for now.
+    	  // It should have changed its p->state before coming back.
+    		  c->proc = 0;
+    		}
+			}
+    	release(&ptable.lock);
+	}
 }
 
 // Enter scheduler.  Must hold only ptable.lock
@@ -523,7 +566,7 @@ procdump(void)
       state = states[p->state];
     else
       state = "???";
-    cprintf("%d %s %s", p->pid, state, p->name);
+    cprintf("%d %s %sc%d", p->pid, state, p->name, p->tix);
     if(p->state == SLEEPING){
       getcallerpcs((uint*)p->context->ebp+2, pc);
       for(i=0; i<10 && pc[i] != 0; i++)
@@ -546,4 +589,47 @@ int sys_getprocs(void){
   }	
   return count;
 
+}
+
+int addr_translate(char* virtual_address)
+{
+    int* physical_address;
+    pde_t *pgtab,*pde;
+
+    //must initialise pgdir
+
+    //pde = &pgdir[PDX(virtual_address)];
+		struct proc *curproc = myproc();
+		pde = curproc->pgdir;
+
+		if(*pde & PTE_P){
+    	pgtab = (pte_t*)V2P(PTE_ADDR(*pde));
+    }
+    else
+    {
+    	cprintf("\n PTE Not Present! - Invalid Virtual address\n");
+    	return -1;
+    }
+
+		cprintf("\n ----------------- \n");
+    cprintf(" Page Directory Entry (PDE): %d\n",*pde);
+    cprintf(" PTE_P : %d\n",PTE_P);
+    cprintf("\n ----------------- \n");
+
+    //uva2ka
+    pte_t *pte;
+    pte = &pgtab[PTX(virtual_address)];
+    physical_address = (int*)V2P(PTE_ADDR(*pte));
+
+    cprintf(" --PHYSICAL ADDRESS-- %d\n",physical_address);
+
+    return 0;
+}
+
+char*
+sys_v2f(char *s)
+{
+  argstr(0, &s);
+  addr_translate(s);
+  return s;
 }
